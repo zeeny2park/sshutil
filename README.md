@@ -121,8 +121,19 @@ sshutil upload ./local-file <target-name>:/remote/path
 
 ---
 
+## 🛠️ For Developers
+
+If you are a developer looking to contribute or understand the internals of `sshutil`, please check our [Development Guide (DEVELOPMENT.md)](./DEVELOPMENT.md).
+
+It covers:
+- System Architecture & Multi-hop Flow
+- TUI Rendering Logic (PTY Proxy)
+- Project Components Breakdown
+- Feature Addition Guide
+
 ## 🤝 Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📄 License
 This project is licensed under the MIT License.
+
