@@ -112,8 +112,11 @@ export function useRemoteExplorer(fileTransfer) {
 
     try {
       let targetPath = currentPath;
+      
+      // If no path is set, resolve the home directory first
       if (!targetPath) {
         targetPath = await fileTransfer.getHomeDir();
+        // Important: set the state so subsequent refreshes use this path
         setCurrentPath(targetPath);
       }
 
@@ -121,7 +124,7 @@ export function useRemoteExplorer(fileTransfer) {
       
       // Add parent directory
       const mapped = [...items];
-      if (targetPath !== '/') {
+      if (targetPath && targetPath !== '/') {
         mapped.unshift({
           name: '..',
           path: path.posix.dirname(targetPath),
