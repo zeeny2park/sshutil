@@ -1,0 +1,35 @@
+# Dependency directories
+node_modules/
+
+# Build artifacts
+dist/
+
+# Configuration
+# Users should keep their real targets.yaml local and use targets.example.yaml for the repo
+config/targets.yaml
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+
+# Editor directories
+.vscode/
+.idea/
+.project
+.settings/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/
+*.tmp

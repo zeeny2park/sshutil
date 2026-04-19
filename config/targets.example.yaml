@@ -1,0 +1,71 @@
+# SSHUtil Target Configuration
+# Copy this file to ~/.sshutil/targets.yaml and edit as needed
+
+targets:
+  # Simple single-hop SSH connection
+  example-server:
+    hops:
+      - host: 192.168.1.100
+        port: 22
+        user: admin
+        auth:
+          type: password
+          value: your-password-here
+
+  # Multi-hop with intermediate commands
+  prod-router:
+    hops:
+      # Hop 1: Jump server
+      - host: 1.1.1.1
+        user: user1
+        auth:
+          type: privateKey
+          value: ~/.ssh/id_rsa
+
+      # Hop 2: Gateway with su - and vrctl
+      - host: 2.2.2.2
+        user: gate1
+        auth:
+          type: password
+          value: gate-password
+        commands:
+          - su -
+          - password: root-password    # Auto-input password
+          - vrctl 31 bash
+
+      # Hop 3: Final target
+      - host: 3.3.3.3
+        user: target-user
+        auth:
+          type: password
+          value: target-password
+
+  # Two-hop with key-based auth
+  staging-db:
+    hops:
+      - host: bastion.example.com
+        user: jumpuser
+        auth:
+          type: privateKey
+          value: ~/.ssh/bastion_key
+
+      - host: 10.0.1.50
+        port: 2222
+        user: dbadmin
+        auth:
+          type: password
+          value: db-password
+
+  # SSH Agent forwarding (uses SSH_AUTH_SOCK)
+  internal-server:
+    hops:
+      - host: 10.0.0.1
+        user: devuser
+        auth:
+          type: agent    # Uses SSH Agent for auth + enables forwarding
+
+  # No auth specified — automatically falls back to SSH Agent if available
+  auto-agent:
+    hops:
+      - host: 10.0.0.2
+        user: devuser
