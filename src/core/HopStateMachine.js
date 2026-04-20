@@ -39,6 +39,8 @@ export class HopStateMachine extends EventEmitter {
     this.currentCommandIndex = 0;
     this._timeoutHandle = null;
     this._stream = null;
+    this._onStdoutData = null;
+    this._onStderrData = null;
   }
 
   /**
@@ -106,19 +108,40 @@ export class HopStateMachine extends EventEmitter {
    * @param {Stream} stream - SSH shell stream
    */
   bindStream(stream) {
+    this.unbindStream();
     this._stream = stream;
     this.outputBuffer = '';
 
-    stream.on('data', (data) => {
+    this._onStdoutData = (data) => {
       const text = data.toString('utf8');
       this.outputBuffer += text;
       this.emit('data', text);
       this._processOutput();
-    });
+    };
 
-    stream.stderr?.on('data', (data) => {
+    this._onStderrData = (data) => {
       logger.warn(`Hop ${this.hopIndex} stderr: ${data.toString('utf8')}`);
-    });
+    };
+
+    stream.on('data', this._onStdoutData);
+    stream.stderr?.on('data', this._onStderrData);
+  }
+
+  /**
+   * Detach stream listeners once command execution is complete.
+   * This lets the same shell stream be reused as a raw transport.
+   */
+  unbindStream() {
+    if (this._stream && this._onStdoutData) {
+      this._stream.removeListener('data', this._onStdoutData);
+    }
+    if (this._stream?.stderr && this._onStderrData) {
+      this._stream.stderr.removeListener('data', this._onStderrData);
+    }
+
+    this._stream = null;
+    this._onStdoutData = null;
+    this._onStderrData = null;
   }
 
   /**
@@ -266,7 +289,7 @@ export class HopStateMachine extends EventEmitter {
    */
   destroy() {
     this._clearTimeout();
-    this._stream = null;
+    this.unbindStream();
     this.outputBuffer = '';
     this._transition(HopState.DISCONNECTED);
     this.removeAllListeners();

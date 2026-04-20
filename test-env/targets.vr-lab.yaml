@@ -1,0 +1,19 @@
+targets:
+  vr-lab:
+    hops:
+      - host: 127.0.0.1
+        port: 4222
+        user: gate1
+        auth:
+          type: password
+          value: gate-password
+        commands:
+          - su -
+          - password: root-password
+          - vrctl 31 bash
+
+      - host: 3.3.3.3
+        user: targetuser
+        auth:
+          type: password
+          value: target-password

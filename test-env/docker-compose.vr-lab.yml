@@ -1,0 +1,10 @@
+services:
+  vr-gateway:
+    build:
+      context: ./vr-lab
+    container_name: sshutil-vr-lab
+    hostname: vr-gateway
+    privileged: true
+    ports:
+      - "4222:2222"
+    restart: unless-stopped

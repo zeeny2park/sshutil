@@ -1,27 +1,46 @@
 import { Client } from 'ssh2';
 import { EventEmitter } from 'events';
 import fs from 'fs';
-import path from 'path';
 import os from 'os';
 import logger from '../utils/logger.js';
 import { SSHConnectionError, AuthenticationError } from '../utils/errors.js';
-import { HopStateMachine, HopState } from './HopStateMachine.js';
+import { HopStateMachine } from './HopStateMachine.js';
 import { DEFAULTS } from '../config/defaults.js';
+
+const RAW_SHELL_MODES = Object.freeze({
+  ECHO: 0,
+  ECHOE: 0,
+  ECHOK: 0,
+  ECHOKE: 0,
+  ECHONL: 0,
+  ICANON: 0,
+  ICRNL: 0,
+  INLCR: 0,
+  IGNCR: 0,
+  OPOST: 0,
+  ONLCR: 0,
+  OCRNL: 0,
+});
+
+function shellEscape(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
 
 /**
  * ConnectionManager orchestrates multi-hop SSH connections.
  *
  * Supports two modes:
  * 1. Standard SSH hop: Uses ssh2 forwardOut() for TCP tunneling
- * 2. Shell-based hop: Uses shell + expect pattern for intermediate commands
- *    (e.g., su -, vrctl, etc.)
+ * 2. Command-shell hop: Executes expect-like commands on a hop and, when needed,
+ *    routes the next hop's SSH transport through that shell context.
  */
 export class ConnectionManager extends EventEmitter {
   constructor() {
     super();
     this.connections = [];       // Array of ssh2.Client instances
     this.stateMachines = [];     // Array of HopStateMachine instances
-    this.shellStreams = [];       // Shell streams for command-based hops
+    this.shellStreams = [];      // Shell streams opened for command execution
+    this.commandShells = [];     // Per-hop command shell contexts for downstream proxying
     this.finalClient = null;     // The last ssh2.Client (for exec/sftp)
     this.finalShell = null;      // Shell stream if final hop uses shell mode
     this.isConnected = false;
@@ -42,8 +61,6 @@ export class ConnectionManager extends EventEmitter {
     try {
       for (let i = 0; i < hops.length; i++) {
         const hop = hops[i];
-        const isLastHop = i === hops.length - 1;
-        const hasCommands = hop.commands && hop.commands.length > 0;
 
         this.emit('progress', {
           message: `Hop ${i + 1}/${hops.length}: ${hop.user}@${hop.host}`,
@@ -58,14 +75,13 @@ export class ConnectionManager extends EventEmitter {
         // Forward state change events
         sm.on('stateChange', (event) => this.emit('hopStateChange', event));
         sm.on('retry', (event) => this.emit('hopRetry', { ...event, hopIndex: i }));
+        sm.on('error', (error) => this.emit('hopError', { hopIndex: i, host: hop.host, error }));
 
-        if (hasCommands && !isLastHop) {
-          // Shell-based hop: use the previous connection's shell
-          await this._connectShellHop(hop, i, sm);
-        } else {
-          // Standard SSH hop: use forwardOut
-          await this._connectSSHHop(hop, i, sm);
-        }
+        // Each hop decides its own transport:
+        // - direct socket for the first hop
+        // - forwardOut for normal downstream hops
+        // - command-shell proxy when the previous hop changed context via commands
+        await this._connectSSHHop(hop, i, sm);
       }
 
       this.finalClient = this.connections[this.connections.length - 1];
@@ -85,7 +101,7 @@ export class ConnectionManager extends EventEmitter {
   }
 
   /**
-   * Standard SSH hop using forwardOut TCP tunneling
+   * SSH hop using direct, forwardOut, or command-shell transport.
    */
   async _connectSSHHop(hop, hopIndex, stateMachine) {
     return new Promise((resolve, reject) => {
@@ -129,26 +145,41 @@ export class ConnectionManager extends EventEmitter {
           }
         }
 
-        // If not the first hop, tunnel through previous connection
+        const prevHop = hopIndex > 0 ? this._targetConfig?.hops?.[hopIndex - 1] : null;
+        const prevHopUsesCommandShell = Boolean(prevHop?.commands?.length);
+
+        // If not the first hop, tunnel through the previous hop.
         if (hopIndex > 0) {
-          const prevClient = this.connections[hopIndex - 1];
-          prevClient.forwardOut('127.0.0.1', 0, hop.host, hop.port, (err, stream) => {
-            if (err) {
-              if (retryCount < DEFAULTS.hop.retryAttempts) {
-                stateMachine.onConnectionFailed(err);
-                setTimeout(() => attemptConnect(retryCount + 1), DEFAULTS.hop.retryDelay);
+          if (prevHopUsesCommandShell) {
+            try {
+              connectConfig.sock = this._createShellProxyStream(hopIndex - 1, hop);
+              delete connectConfig.host;
+              delete connectConfig.port;
+              client.connect(connectConfig);
+            } catch (err) {
+              stateMachine.onConnectionFailed(err);
+              reject(err);
+            }
+          } else {
+            const prevClient = this.connections[hopIndex - 1];
+            prevClient.forwardOut('127.0.0.1', 0, hop.host, hop.port, (err, stream) => {
+              if (err) {
+                if (retryCount < DEFAULTS.hop.retryAttempts) {
+                  stateMachine.onConnectionFailed(err);
+                  setTimeout(() => attemptConnect(retryCount + 1), DEFAULTS.hop.retryDelay);
+                  return;
+                }
+                reject(new SSHConnectionError(
+                  `forwardOut failed for hop ${hopIndex}: ${err.message}`, hop
+                ));
                 return;
               }
-              reject(new SSHConnectionError(
-                `forwardOut failed for hop ${hopIndex}: ${err.message}`, hop
-              ));
-              return;
-            }
-            connectConfig.sock = stream;
-            delete connectConfig.host;
-            delete connectConfig.port;
-            client.connect(connectConfig);
-          });
+              connectConfig.sock = stream;
+              delete connectConfig.host;
+              delete connectConfig.port;
+              client.connect(connectConfig);
+            });
+          }
         } else {
           client.connect(connectConfig);
         }
@@ -169,7 +200,7 @@ export class ConnectionManager extends EventEmitter {
 
         client.on('error', (err) => {
           logger.error(`Hop ${hopIndex} error: ${err.message}`);
-          if (retryCount < DEFAULTS.hop.retryAttempts) {
+          if (retryCount < DEFAULTS.hop.retryAttempts && !(prevHop?.commands?.length)) {
             stateMachine.onConnectionFailed(err);
             setTimeout(() => attemptConnect(retryCount + 1), DEFAULTS.hop.retryDelay);
           } else {
@@ -194,17 +225,64 @@ export class ConnectionManager extends EventEmitter {
   }
 
   /**
-   * Shell-based hop: use existing connection's shell for intermediate commands
+   * Build a shell proxy stream from a previously prepared command shell.
    */
-  async _connectShellHop(hop, hopIndex, stateMachine) {
-    const prevClient = this.connections[hopIndex - 1] || this.connections[this.connections.length - 1];
+  _createShellProxyStream(prevHopIndex, nextHop) {
+    const shellContext = this.commandShells[prevHopIndex];
+    const prevHop = this._targetConfig?.hops?.[prevHopIndex];
 
-    return new Promise((resolve, reject) => {
-      // First establish an SSH connection to this hop
-      this._connectSSHHop(hop, hopIndex, stateMachine)
-        .then((client) => resolve(client))
-        .catch(reject);
-    });
+    if (!shellContext?.stream) {
+      throw new SSHConnectionError(
+        `Hop ${prevHopIndex} has commands but no reusable shell context for ${nextHop.host}`,
+        prevHop
+      );
+    }
+
+    if (shellContext.consumedAsTransport) {
+      throw new SSHConnectionError(
+        `Hop ${prevHopIndex} command shell is already in use for downstream transport`,
+        prevHop
+      );
+    }
+
+    const stream = shellContext.stream;
+    if (stream.destroyed || !stream.writable) {
+      throw new SSHConnectionError(
+        `Hop ${prevHopIndex} command shell is not writable for downstream transport`,
+        prevHop
+      );
+    }
+
+    const proxyCommand = this._buildShellProxyCommand(nextHop.host, nextHop.port);
+    shellContext.consumedAsTransport = true;
+    shellContext.proxyTarget = `${nextHop.user}@${nextHop.host}:${nextHop.port}`;
+
+    logger.info(
+      `Hop ${prevHopIndex}: routing next hop through command shell (${shellContext.proxyTarget})`
+    );
+    stream.write(proxyCommand + '\n');
+
+    return stream;
+  }
+
+  /**
+   * Build a shell command that turns the current shell into a TCP proxy.
+   */
+  _buildShellProxyCommand(host, port) {
+    const hostArg = shellEscape(host);
+    const portArg = shellEscape(port);
+
+    return [
+      '(stty raw -echo -onlcr -ocrnl -icrnl -inlcr -igncr 2>/dev/null || true);',
+      'if command -v nc >/dev/null 2>&1; then',
+      `exec nc ${hostArg} ${portArg};`,
+      'elif command -v ncat >/dev/null 2>&1; then',
+      `exec ncat ${hostArg} ${portArg};`,
+      'else',
+      `printf %s\\\\n ${shellEscape('sshutil requires nc or ncat on this hop for downstream SSH proxying')} >&2;`,
+      'exit 127;',
+      'fi',
+    ].join(' ');
   }
 
   /**
@@ -212,7 +290,7 @@ export class ConnectionManager extends EventEmitter {
    */
   async _executeHopCommands(client, hop, hopIndex, stateMachine) {
     return new Promise((resolve, reject) => {
-      client.shell({ term: 'xterm-256color' }, (err, stream) => {
+      client.shell({ term: 'xterm-256color', modes: RAW_SHELL_MODES }, (err, stream) => {
         if (err) {
           reject(new SSHConnectionError(`Failed to open shell on hop ${hopIndex}: ${err.message}`, hop));
           return;
@@ -221,18 +299,39 @@ export class ConnectionManager extends EventEmitter {
         this.shellStreams.push(stream);
         stateMachine.bindStream(stream);
 
-        stateMachine.on('ready', () => {
+        const cleanup = () => {
+          stateMachine.removeListener('ready', onReady);
+          stateMachine.removeListener('failed', onFailed);
+          stateMachine.removeListener('error', onError);
+        };
+
+        const onReady = () => {
+          cleanup();
+          stateMachine.unbindStream();
+          this.commandShells[hopIndex] = {
+            stream,
+            hopIndex,
+            consumedAsTransport: false,
+          };
           logger.info(`Hop ${hopIndex}: all commands executed successfully`);
           resolve();
-        });
+        };
 
-        stateMachine.on('failed', (error) => {
+        const onFailed = (error) => {
+          cleanup();
+          stateMachine.unbindStream();
           reject(error);
-        });
+        };
 
-        stateMachine.on('error', (error) => {
+        const onError = (error) => {
+          cleanup();
+          stateMachine.unbindStream();
           reject(error);
-        });
+        };
+
+        stateMachine.once('ready', onReady);
+        stateMachine.once('failed', onFailed);
+        stateMachine.once('error', onError);
 
         stateMachine.startCommandExecution();
       });
@@ -332,18 +431,6 @@ export class ConnectionManager extends EventEmitter {
   async disconnect() {
     logger.info('Disconnecting all hops...');
 
-    // Close shell streams
-    for (const stream of this.shellStreams) {
-      try {
-        if (stream && !stream.destroyed) {
-          stream.end();
-          stream.destroy();
-        }
-      } catch (e) {
-        logger.debug(`Error closing shell stream: ${e.message}`);
-      }
-    }
-
     // Close connections in reverse order
     for (let i = this.connections.length - 1; i >= 0; i--) {
       try {
@@ -356,6 +443,18 @@ export class ConnectionManager extends EventEmitter {
       }
     }
 
+    // Close shell streams after client shutdown so proxy-backed clients can end cleanly.
+    for (const stream of new Set(this.shellStreams)) {
+      try {
+        if (stream && !stream.destroyed) {
+          stream.end();
+          stream.destroy();
+        }
+      } catch (e) {
+        logger.debug(`Error closing shell stream: ${e.message}`);
+      }
+    }
+
     // Destroy state machines
     for (const sm of this.stateMachines) {
       sm.destroy();
@@ -364,6 +463,7 @@ export class ConnectionManager extends EventEmitter {
     this.connections = [];
     this.stateMachines = [];
     this.shellStreams = [];
+    this.commandShells = [];
     this.finalClient = null;
     this.finalShell = null;
     this.isConnected = false;

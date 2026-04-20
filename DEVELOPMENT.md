@@ -28,9 +28,9 @@
 - `scripts/`: 빌드 및 자동화 스크립트입니다.
 
 ### 주요 클래스 설명
-1.  **`ConnectionManager.js`**: 전체 연결 체인을 관리합니다. 1차 점프 서버에서 최종 목적지까지 `forwardOut`으로 터널링을 구성하거나, 중간에 커맨드(su 등)가 필요한 경우 이를 처리합니다.
+1.  **`ConnectionManager.js`**: 전체 연결 체인을 관리합니다. 1차 점프 서버에서 최종 목적지까지 `forwardOut`으로 터널링을 구성하고, 중간 hop에서 `su -`, `vrctl` 같은 커맨드가 실행되면 그 shell 컨텍스트를 다음 hop SSH transport로 재사용합니다.
 2.  **`HopStateMachine.js`**: 각 접속 단계(Hop)의 상태를 관리합니다. 특히 패스워드 입력 대기, 프롬프트 확인 등 "Expect" 패턴의 로직을 담당합니다.
-3.  **`FileTransfer.js`**: SFTP를 활용한 파일 업로드/다운로드 로직입니다. 성능을 위해 `fastGet`/`fastPut` API를 사용하며 진행 상태(Progress)를 이벤트로 발생시킵니다.
+3.  **`FileTransfer.js`**: SFTP를 활용한 파일 업로드/다운로드 로직입니다. 성능을 위해 `fastGet`/`fastPut` API를 사용하며 진행 상태(Progress)를 이벤트로 발생시킵니다. 중간 hop의 shell-aware transport가 필요한 경우에도 최종 hop SSH 세션이 정상적으로 성립되면 그대로 SFTP를 사용할 수 있습니다.
 
 ---
 

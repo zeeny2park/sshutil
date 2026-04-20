@@ -28,6 +28,7 @@ Thumbs.db
 .settings/
 *.swp
 *.swo
+.codex
 
 # Temporary files
 tmp/

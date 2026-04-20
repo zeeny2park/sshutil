@@ -31,7 +31,7 @@ targets:
         commands:
           - su -
           - password: root-password    # Auto-input password
-          - vrctl 31 bash
+          - vrctl 31 bash              # Next hop SSH/SFTP will run through this shell context
 
       # Hop 3: Final target
       - host: 3.3.3.3

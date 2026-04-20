@@ -12,6 +12,7 @@
 - **🚀 Fast Transfers**: Uses `SFTP` with `fastGet`/`fastPut` for reliable, high-speed file transfers.
 - **⌨️ Native Terminal**: Full PTY proxying for a 100% native SSH shell experience (supports `vi`, `top`, tabs, etc.).
 - **⚙️ YAML Config**: Easily manage hundreds of targets using a simple YAML configuration.
+- **🧭 Shell-Aware Hops**: If a hop runs commands such as `su -` or `vrctl 31 bash`, the next hop is connected through that modified shell context so routing and source interface changes are preserved.
 
 ---
 
@@ -115,6 +116,7 @@ sshutil upload ./local-file <target-name>:/remote/path
 ## ⚠️ Constraints & Disclaimers
 
 - **SFTP Only**: File transfers require the SFTP subsystem to be enabled on the remote server.
+- **Command-Based Hops**: If an intermediate hop uses `commands`, that host also needs `nc` or `ncat` installed so SSHUtil can proxy the next SSH hop through the active shell context.
 - **Terminal Emulation**: The "Native Terminal" mode relies on your local terminal's ability to handle raw PTY input. Support for complex escape codes (colors, cursor positioning) depends on your local environment (e.g., iTerm2, Kitty, Alacritty).
 - **Security**: Password values are stored in plain text in `targets.yaml`. It is highly recommended to use `type: agent` or `type: key-file` for production environments.
 - **Home Directory**: SSHUtil automatically attempts to resolve the remote user's home directory. If it fails, it defaults to `/`.
@@ -136,4 +138,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📄 License
 This project is licensed under the MIT License.
-
